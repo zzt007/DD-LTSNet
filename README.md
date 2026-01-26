@@ -1,6 +1,8 @@
 # DD-LTSNet
 DD-LTSNet: A Detection-Driven Framework with Dual-Stream Enhancement and Multi-Scale Consensus Aggregation for Low-Light Traffic Sign Detection
-![DD-LTSNet Model Architecture](/home/2024-Zhong.zt/HHD/detection/DD-LTSNet/fig/overall_framework.png)
+
+## Model Architecture
+![DD-LTSNet Model Architecture](fig/overall_framework.png)
 
 
 ## 🚀 Getting Started
