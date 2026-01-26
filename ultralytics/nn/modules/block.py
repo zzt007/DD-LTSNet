@@ -1958,7 +1958,6 @@ class SAVPE(nn.Module):
         return F.normalize(aggregated.transpose(-2, -3).reshape(B, Q, -1), dim=-1, p=2)
 
 '--------------------------------DSAEN-------------------------------'  
-# 处理相对导入问题 - 当直接运行模块时
 if __name__ == "__main__":
     from ultralytics.nn.modules.myEnhance.HVI_transform import RGB_HVI
     from ultralytics.nn.modules.myEnhance.DSAEN import dual_stream_net
@@ -1982,11 +1981,6 @@ class DSAEN(nn.Module):
     
     
 
-
-'--------------------------------SSF-------------------------------' 
-'''
-------------------------------------------------------------------------------------SSF module------------------------------------------------------------------------------------------
-'''
 class SNI(nn.Module):
     def __init__(self, up_f=2):
         super(SNI, self).__init__()
@@ -2032,7 +2026,6 @@ class InceptionModulev2(nn.Module):
         super(InceptionModulev2, self).__init__()
         self.branch1x1 = nn.Conv2d(in_channels, out_channels, kernel_size=1)
         self.branch3x3 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-        # 将原来的branch5x5改为两个串联的conv3x3，保持相同的感受野但减少参数量
         self.branch3x3_1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
         self.branch3x3_2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
         self.branch_pool = nn.Conv2d(in_channels, out_channels, kernel_size=1)
@@ -2054,7 +2047,6 @@ class InceptionModulev2(nn.Module):
     def forward(self, x):
         branch1x1 = self.branch1x1(x)
         branch3x3 = self.branch3x3(x)
-        # 两个3x3卷积串联，达到与5x5卷积相同的感受野
         branch3x3_1 = self.branch3x3_1(x)
         branch3x3_2 = self.branch3x3_2(branch3x3_1)
         branch_pool = self.branch_pool(self.pool(x))
@@ -2063,9 +2055,9 @@ class InceptionModulev2(nn.Module):
         outputs = self.conv(outputs)  # （1，1，64，64）
         return outputs
     
-class SSF(nn.Module):
+class SAF(nn.Module):
     def __init__(self, num_feats, encode_channels, target_channels, version="v2"):
-        super(SSF, self).__init__()
+        super(SAF, self).__init__()
         self.num_feats = num_feats
         self.target_channels = target_channels
 
@@ -2080,40 +2072,28 @@ class SSF(nn.Module):
         
 
     def forward(self, x, feat_list):
-        # 传入的x特征图，shape为BCHW; 传入的feat_list, 从1到4分别是尺寸越来越小的特征图，尺寸分别为（1，128，64，64）、（1，256，32，32）、（512，16，16）、（1，512，8，8）
         target_height, target_width = x.size(2), x.size(3)
-        # feat_list.reverse() # 反转后变为：（1，512，8，8）、（512，16，16）、（1，256，32，32）、（1，128，64，64）
-        # Process each feature map in feat_list
         aligned_feats = []
         encoder_feat = torch.zeros_like(x) # （1，128，64，64）
         
         for i, feat in enumerate(feat_list):
-            # 这就是所谓的自适应，就是一个判断是否和目标尺寸一样，若一样则直接赋值；若不同，则还要通过mean、interpolate等操作来调整尺寸
             if feat.size(2) == target_height and feat.size(3) == target_width:
                 encoder_feat = feat
 
-            # 沿通道维度取平均，此时通道数变为1
             feat = torch.mean(feat, dim=1, keepdim=True) 
-            # 双线性插值扩展宽高至目标宽高（目标宽高是当前输入的x的宽高），所以还涉及到下采样过程
             feat = F.interpolate(feat, size=(target_height, target_width), mode='bilinear', align_corners=False)
             aligned_feats.append(feat)
 
-        # Stack the aligned feature maps along the channel dimension；此时因为有4个输入，所以是（1，4，64，64）
+        # Stack the aligned feature maps along the channel dimension；
         stacked_feats = torch.cat(aligned_feats, dim=1)
 
-        # Fuse features along the N dimension，此时仍然为（1，4，target_height，target_width）
+        # Fuse features along the N dimension
         fused_feat = self.conv_fusion(stacked_feats)
 
         # Apply the Inception module for multi-scale feature extraction
         inception_feat = self.inception(fused_feat)
         inception_feat = torch.sigmoid(inception_feat)
 
-        # 加权后再接跳跃连接；特征相加、拼接和哈达玛积可以做不同尝试。
-        # 1、使用相加；没有额外计算负担，梯度直接传播；
-        # guided_feat = inception_feat * encoder_feat + x # （1，1，64，64）*（1，128，64，64）+ (1，128，64，64)= （1，128，64，64）
-        # 2、hadamard积
-        # guided_feat = inception_feat * encoder_feat * x # （1，1，64，64）*（1，128，64，64）*（1，128，64，64）= （1，128，64，64）
-        # 3、concat，修改下方送入final_conv的输入
         guided_feat = inception_feat * encoder_feat
         
         output = self.final_conv(torch.cat([guided_feat, x], dim=1))
@@ -2121,81 +2101,16 @@ class SSF(nn.Module):
         return output
 
 
-# 采用nn-v8中的CSSA_2模块
-class CSSA_2(nn.Module):
-    def __init__(self, c1):
-        super(CSSA_2, self).__init__()
-        # 因为f1就是160x160x128的特征图尺寸了，不用上采样了; 其中c1=128。此处upsample的目的是把不同尺寸的特征图在宽高、通道上都统一
-        
-        self.upsample_f2 = nn.Sequential(
-            nn.Conv2d(c1 * 2, c1, kernel_size=1),  # 1x1 conv to change channels
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)  # upsample
-        )
-        self.upsample_f3 = nn.Sequential(
-            nn.Conv2d(c1 * 4, c1, kernel_size=1),  # 1x1 conv to change channels
-            nn.Upsample(scale_factor=4, mode='bilinear', align_corners=True)  # upsample
-        )
-
-        self.upsample_f4 = nn.Sequential(
-            nn.Conv2d(c1 * 4, c1, kernel_size=1),  # 1x1 conv to change channels 为什么这里通道数也是512？可是下面写的是1024啊
-            nn.Upsample(scale_factor=8, mode='bilinear', align_corners=True)  # upsample
-        )
-
-        self.softmax_conv = Conv(c1 *4 , c1, 1, 1)  # SoftMax Conv
-        self.conv3x3 = Conv(c1, c1, 3, 1)
-
-        # SFF初始化，目标特征通道均保持一致
-        self.ssf_1 = SSF(num_feats=4, encode_channels=[c1*4, c1*4, c1*2, c1], target_channels=c1)
-        # print('--- now print the target_channels: ', c1)
-        # self.ssf_2 = SSF(num_feats=4, encode_channels=[c1*4, c1*4, c1*2, c1], target_channels=c1 )
-        # self.ssf_3 = SSF(num_feats=4, encode_channels=[c1*4, c1*4, c1*2, c1], target_channels=c1 )
-        # self.ssf_4 = SSF(num_feats=4, encode_channels=[c1*4, c1*4, c1*2, c1], target_channels=c1 )
-
-
-    def forward(self, x):
-        # x包含4个不同尺度的特征图，从1到4分别是尺寸越来越小;x[0] shape为（1，128，64，64）往后分别为（1，256，32，32）、（512，16，16）、（1，512，8，8）
-        f1 = x[0] # (160*160*128)
-        f2 = x[1] # (80*80*256)
-        f3 = x[2] # (40*40*512)
-        f4 = x[3] # (20*20*1024)
-
-        # 修改了upsample函数，仅让各特征图的宽高统一到与f1的宽高一致，通道数保持和原来一样的128、256、512、1024
-        # # 各输入特征使用参数共享的SSF模块，使用时需要注释SSF初始化中的其它SSF模块，只保留一个即可
-        x1 = self.ssf_1(f1, x) # x1:（1，128，64，64）
-        x2 = self.ssf_1(self.upsample_f2(f2), x) # 经过upsample后f2:(1,256,64,64)，x2：（按理也要是128）
-        x3 = self.ssf_1(self.upsample_f3(f3), x) # 经过upsample后f3:(1,512,64,64)
-        x4 = self.ssf_1(self.upsample_f4(f4), x) # 经过upsample后f4:(1,512,64,64)
-        
-        # # 各输入特征使用各自独立的SSF模块
-        # x1 = self.ssf_1(f1, x) 
-        # x2 = self.ssf_2(self.upsample_f2(f2), x) 
-        # x3 = self.ssf_3(self.upsample_f3(f3), x) 
-        # x4 = self.ssf_4(self.upsample_f4(f4), x) 
-        
-        # concat
-        concat = torch.cat((x1, x2, x3, x4), dim=1)
-
-        concat = self.softmax_conv(concat)
-        result = self.conv3x3(concat)
-
-        return result 
-    
-# 使用独立的SSF模块
 class MSCA(nn.Module):
     def __init__(self, c1, upsample_type="sni"):
         super(MSCA, self).__init__()
         self.softmax_conv = Conv(c1 * 4, c1, 1, 1)  # SoftMax Conv
         self.conv3x3 = Conv(c1, c1, 3, 1) # CBS
-        
-        # SFF初始化，各层特征使用独立的ssf
-        # self.ssf_P2 = SSF(num_feats=4, encode_channels=[c1*4, c1*4, c1*2, c1], target_channels=[c1, c1*2, c1*4, c1*4])
-        # self.ssf_P3 = SSF(num_feats=4, encode_channels=[c1*4, c1*4, c1*2, c1], target_channels=[c1, c1*2, c1*4, c1*4])
-        # self.ssf_P4 = SSF(num_feats=4, encode_channels=[c1*4, c1*4, c1*2, c1], target_channels=[c1, c1*2, c1*4, c1*4])
-        # self.ssf_P5 = SSF(num_feats=4, encode_channels=[c1*4, c1*4, c1*2, c1], target_channels=[c1, c1*2, c1*4, c1*4])
-        self.ssf_P2 = SSF(num_feats=4, encode_channels=[c1*4, c1*4, c1*2, c1], target_channels= c1)
-        self.ssf_P3 = SSF(num_feats=4, encode_channels=[c1*4, c1*4, c1*2, c1], target_channels= c1*2)
-        self.ssf_P4 = SSF(num_feats=4, encode_channels=[c1*4, c1*4, c1*2, c1], target_channels= c1*4)
-        self.ssf_P5 = SSF(num_feats=4, encode_channels=[c1*4, c1*4, c1*2, c1], target_channels= c1*4)
+
+        self.ssf_P2 = SAF(num_feats=4, encode_channels=[c1*4, c1*4, c1*2, c1], target_channels= c1)
+        self.ssf_P3 = SAF(num_feats=4, encode_channels=[c1*4, c1*4, c1*2, c1], target_channels= c1*2)
+        self.ssf_P4 = SAF(num_feats=4, encode_channels=[c1*4, c1*4, c1*2, c1], target_channels= c1*4)
+        self.ssf_P5 = SAF(num_feats=4, encode_channels=[c1*4, c1*4, c1*2, c1], target_channels= c1*4)
 
         # self.final_conv2 = nn.Sequential(
         #     DWConv(target_channels[1] * 2, 128, k=3, s=1),
@@ -2224,18 +2139,15 @@ class MSCA(nn.Module):
 
 
     def forward(self, x):
-        # x包含4个不同尺度的特征图，从1到4分别是尺寸越来越小;x[0] shape为（1，128，64，64）往后分别为（1，256，32，32）、（512，16，16）、（1，512，8，8）
-
-        # 修改了upsample函数，仅让各特征图的宽高统一到与f1的宽高一致，通道数保持和原来一样的128、256、512、512
-        P2_featuremap_fused = self.ssf_P2(x[0], x) # P2 feature map:（1，128，64，64） 
+        P2_featuremap_fused = self.ssf_P2(x[0], x)
         
-        P3_featuremap_fused = self.ssf_P3(x[1], x) # P3 feature map:（1，256，32，32）
+        P3_featuremap_fused = self.ssf_P3(x[1], x) 
         P3_featuremap_fused = self.final_conv2(P3_featuremap_fused)
         
-        P4_featuremap_fused = self.ssf_P4(x[2], x) # P4 feature map:（1，512，16，16）
+        P4_featuremap_fused = self.ssf_P4(x[2], x) 
         P4_featuremap_fused = self.final_conv3(P4_featuremap_fused)
         
-        P5_featuremap_fused = self.ssf_P5(x[3], x) # P5 feature map:（1，512，8，8）
+        P5_featuremap_fused = self.ssf_P5(x[3], x)
         P5_featuremap_fused = self.final_conv4(P5_featuremap_fused)
         
         final_featuremap_fused = torch.cat([P2_featuremap_fused, 
@@ -2247,63 +2159,3 @@ class MSCA(nn.Module):
 
         return result 
     
-'----------------------------------------Sharing SSF, and all feature map(P3\P4\P5) resize to P2, and then feed into SSF----------------------------------------'
-
-class mySFF(nn.Module):
-    def __init__(self, num_feats, encode_channels, target_channels, version="v2"):
-        super(SSF, self).__init__()
-        self.num_feats = num_feats
-        self.target_channels = target_channels
-        
-        self.conv_fusion = nn.Conv2d(num_feats, num_feats, 3, 1)
-        
-        if version == "v1":
-            self.inception = InceptionModule(num_feats, num_feats)
-        elif version == "v2":
-            self.inception = InceptionModulev2(num_feats, num_feats)
-
-        # 如果使用拼接，则输入通道数 * 2
-        self.final_conv = nn.Conv2d(target_channels * 2, 128, 3, 1)
-        self._initialize_weights()
-        
-    def _initialize_weights(self):
-        # for conv in self.align_convs:
-        #     nn.init.kaiming_normal_(conv.weight, mode='fan_out', nonlinearity='relu')
-        nn.init.kaiming_normal_(self.conv_fusion.weight, mode='fan_out', nonlinearity='relu')
-        nn.init.kaiming_normal_(self.final_conv.weight, mode='fan_out', nonlinearity='relu')
-
-
-    def forward(self, x, feat_list):
-        # 传入的x特征图，shape为BCHW; 传入的feat_list, 从1到4分别是尺寸越来越小的特征图，尺寸分别为（1，128，64，64）、（1，256，32，32）、（512，16，16）、（1，512，8，8）
-        target_height, target_width = x.size(2), x.size(3)
-        # Process each feature map in feat_list
-        aligned_feats = []
-        encoder_feat = torch.zeros_like(x) # （1，128，64，64）
-        
-        for i, feat in enumerate(feat_list):
-            # 这就是所谓的自适应，就是一个判断是否和目标尺寸一样，若一样则直接赋值；若不同，则还要通过mean、interpolate等操作来调整尺寸
-            if feat.size(2) == target_height and feat.size(3) == target_width:
-                encoder_feat = feat
-
-            # 沿通道维度取平均，此时通道数变为1
-            feat = torch.mean(feat, dim=1, keepdim=True) 
-            # 双线性插值扩展宽高至目标宽高，此处设为64、64
-            feat = F.interpolate(feat, size=(target_height, target_width), mode='bilinear', align_corners=False)
-            aligned_feats.append(feat)
-
-        # Stack the aligned feature maps along the channel dimension；此时因为有4个输入，所以是（1，4，64，64）
-        stacked_feats = torch.cat(aligned_feats, dim=1)
-
-        # Fuse features along the N dimension，此时仍然为（1，4，64，64）
-        fused_feat = self.conv_fusion(stacked_feats)
-
-        # Apply the Inception module for multi-scale feature extraction
-        inception_feat = self.inception(fused_feat)
-        inception_feat = torch.sigmoid(inception_feat)
-
-        guided_feat = inception_feat * encoder_feat # （1，1，64，64）*（1，128，64，64）= （1，128，64，64）
-
-        output = self.final_conv(torch.cat([guided_feat, x], dim=1)) # （1，128，64，64）
-
-        return output
-
