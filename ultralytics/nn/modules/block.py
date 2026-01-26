@@ -1980,7 +1980,7 @@ class DSAEN(nn.Module):
         return output4yolo
     
     
-
+'--------------------------------MSCA-------------------------------'  
 class SNI(nn.Module):
     def __init__(self, up_f=2):
         super(SNI, self).__init__()
