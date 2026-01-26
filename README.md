@@ -22,4 +22,17 @@ DD-LTSNet: A Detection-Driven Framework with Dual-Stream Enhancement and Multi-S
    pip install -r requirements.txt
    (optinal you can install the Simplified Verison)
    ```
-   
+
+## Train
+1. Our model configuration is stored in the DD-LTSNet.yaml file.
+
+2. Train the model
+   ```bash
+   python train.py
+   ```
+
+## Test
+1. Test the model
+   ```bash
+   python test.py
+   ```
