@@ -17,8 +17,7 @@ DD-LTSNet: A Detection-Driven Framework with Dual-Stream Enhancement and Multi-S
 
 2. Create a virtual environment
    ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows use `venv\Scripts\activate`
+   conda create -n dd-ltsnet python=3.8
    ```
 
 3. Install requirements
